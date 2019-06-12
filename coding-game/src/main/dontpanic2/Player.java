@@ -38,14 +38,19 @@ class Player {
         Board b = new Board(in);
 
         log("Board is ready\n" + b);
+        int buildAdditionalElevator = 0;
 
         // game loop
         while (true) {
             int cloneFloor = in.nextInt(); // floor of the leading clone
             int clonePos = in.nextInt(); // position of the leading clone on its floor
             String direction = in.next(); // direction of the leading clone: LEFT or RIGHT
-            Position current = new Position(cloneFloor, clonePos, direction);
+            Position current = new Position(cloneFloor, clonePos, direction, b.nbAdditionalElevators - buildAdditionalElevator);
+            Player.log("Clone position: " + current);
             Action action = b.getBestAction(current);
+            if (action == Action.ELEVATOR) {
+                buildAdditionalElevator++;
+            }
             System.out.println(action); // action: WAIT or BLOCK or ELEVATOR
         }
     }
@@ -77,7 +82,9 @@ class Board {
         nbAdditionalElevators = in.nextInt(); // number of additional elevators that you can build
         nbElevators = in.nextInt(); // number of elevators
         floors = new Floor[nbFloors];
-        Arrays.fill(floors, new Floor());
+        for (int i = 0; i < nbFloors; i++) {
+            floors[i] = new Floor();
+        }
         for (int i = 0; i < nbElevators; i++) {
             int elevatorFloor = in.nextInt(); // floor on which this elevator is found
             int elevatorPos = in.nextInt(); // position of the elevator on its floor
@@ -87,7 +94,7 @@ class Board {
 
     Map<Position, Action> path2Exit(Position startPos) {
 
-        Player.log("start path2Exit");
+        Player.log("start path2Exit: " + startPos);
 
         Map<Position, Integer> cost = getCost(startPos);
 
@@ -96,18 +103,26 @@ class Board {
         Map<Position, Action> path = new HashMap<>();
         while (!exit.equals(startPos)) {
             int minCost = Integer.MAX_VALUE;
+            Position minPos = null;
+            Action minAction = null;
             for (Action a : Action.values()) {
-                Position prev = exit.prev(a);
-                if (isInBoard(prev)) {
-                    Player.log("Prev: " + prev);
-                    int prevCost = cost.get(prev);
-                    if (prevCost < minCost) {
-                        minCost = prevCost;
-                        exit = prev;
-                        path.put(exit, a);
+                for (Position prev : exit.prev(a, this)) {
+                    if (isInBoard(prev)) {
+                        // assert  cost.containsKey(prev) : prev.toString() + a;
+                        int prevCost = cost.getOrDefault(prev, Integer.MAX_VALUE);
+                        if (prevCost < minCost) {
+                            minCost = prevCost;
+                            minPos = prev;
+                            minAction = a;
+                        }
                     }
                 }
             }
+            exit = minPos;
+            assert exit != null;
+            assert minAction != null;
+            Player.log("Exit: " + minPos + ", " + minAction);
+            path.put(minPos, minAction);
         }
 
         Player.log("end path2Exit");
@@ -115,9 +130,20 @@ class Board {
     }
 
     Position getExitPosition(Map<Position, Integer> cost) {
-        Position exitRight = new Position(exitFloor, exitPos, Direction.RIGHT);
-        Position exitLeft = new Position(exitFloor, exitPos, Direction.LEFT);
-        return cost.getOrDefault(exitLeft, Integer.MAX_VALUE) < cost.getOrDefault(exitRight, Integer.MAX_VALUE) ? exitLeft : exitRight;
+        Position exit = null;
+        int minExitCost = Integer.MAX_VALUE;
+        for (int i = 0; i <= nbAdditionalElevators; i++) {
+            for (Direction d : Direction.values()) {
+                Position candidate = new Position(exitFloor, exitPos, d, i);
+                int candidateCost = cost.getOrDefault(candidate, Integer.MAX_VALUE);
+                if (candidateCost < minExitCost) {
+                    minExitCost = candidateCost;
+                    exit = candidate;
+                }
+            }
+        }
+        assert exit != null;
+        return exit;
     }
 
     Map<Position, Integer> getCost(Position startPos) {
@@ -129,15 +155,15 @@ class Board {
 
         while (!todo.isEmpty()) {
             Position current = todo.pop();
-            Player.log("\nCurrent: " + current);
+            //Player.log("\nCurrent: " + current);
             int currentCost = cost.get(current);
             for (Action a : Action.values()) {
                 int nextCost = currentCost + a.cost;
-                Position nextPos = current.move(a);
+                Position nextPos = current.move(a, this);
                 // Player.log("Next: " + nextPos);
                 if (isInBoard(nextPos)) {
                     int bestCost = cost.getOrDefault(nextPos, Integer.MAX_VALUE);
-                    if (nextCost < nbRounds && nextCost < bestCost) {
+                    if (nextCost <= nbRounds && nextCost < bestCost) {
                         // Player.log("Add as todo: " + nextPos);
                         cost.put(nextPos, nextCost);
                         todo.push(nextPos);
@@ -149,7 +175,7 @@ class Board {
     }
 
     boolean isInBoard(Position pos) {
-        return pos.cloneFloor>= 0 && pos.cloneFloor < nbFloors && pos.clonePos >= 0 && pos.clonePos <= width;
+        return pos.nbAdditionalElevators >= 0 && pos.cloneFloor >= 0 && pos.cloneFloor < nbFloors && pos.clonePos >= 0 && pos.clonePos < width;
     }
 
 
@@ -166,14 +192,24 @@ class Board {
 
     @Override
     public String toString() {
-        return nbFloors +
+        StringBuffer bf = new StringBuffer(nbFloors +
                 "\n" + width +
                 "\n" + nbRounds +
                 "\n" + exitFloor +
                 "\n" + exitPos +
                 "\n" + nbTotalClones +
                 "\n" + nbAdditionalElevators +
-                "\n" + nbElevators;
+                "\n" + nbElevators);
+        for (int floor = 0; floor < nbFloors; floor++) {
+            for (int pos : floors[floor].positions) {
+                bf.append("\n" + floor + " " + pos);
+            }
+        }
+        return bf.toString();
+    }
+
+    boolean isElevatorAt(int cloneFloor, int clonePos) {
+        return cloneFloor >= 0 && floors[cloneFloor].contains(clonePos);
     }
 }
 
@@ -181,47 +217,61 @@ class Position {
     int cloneFloor;
     int clonePos;
     Direction direction;
+    int nbAdditionalElevators;
 
-    public Position(int cloneFloor, int clonePos, String direction) {
-        this(cloneFloor, clonePos, Direction.valueOf(direction));
+    public Position(int cloneFloor, int clonePos, String direction, int nbAdditionalElevators) {
+        this(cloneFloor, clonePos, Direction.valueOf(direction), nbAdditionalElevators);
     }
 
-    public Position(int cloneFloor, int clonePos, Direction direction) {
+    public Position(int cloneFloor, int clonePos, Direction direction, int nbAdditionalElevators) {
         this.cloneFloor = cloneFloor;
         this.clonePos = clonePos;
         this.direction = direction;
+        this.nbAdditionalElevators = nbAdditionalElevators;
     }
 
-    public Position move(Action a) {
+    public Position move(Action a, Board b) {
+        assert b.isInBoard(this);
         switch (a) {
             case ELEVATOR:
-                return new Position(cloneFloor + 1, clonePos, direction);
+                return new Position(cloneFloor + 1, clonePos, direction, nbAdditionalElevators - 1);
             case BLOCK:
-                return new Position(cloneFloor, clonePos, direction.inverse());
+                return new Position(cloneFloor, clonePos, direction.inverse(), nbAdditionalElevators);
             case WAIT:
+                if (b.floors[cloneFloor].contains(clonePos)) {
+                    return new Position(cloneFloor + 1, clonePos, direction, nbAdditionalElevators);
+                }
                 switch (direction) {
                     case LEFT:
-                        return new Position(cloneFloor, clonePos - 1, direction);
+                        return new Position(cloneFloor, clonePos - 1, direction, nbAdditionalElevators);
                     case RIGHT:
-                        return new Position(cloneFloor, clonePos + 1, direction);
+                        return new Position(cloneFloor, clonePos + 1, direction, nbAdditionalElevators);
                 }
             default:
                 throw new IllegalStateException();
         }
     }
 
-    public Position prev(Action a) {
+    public List<Position> prev(Action a, Board b) {
+        List<Position> positions = new ArrayList<>();
         switch (a) {
             case ELEVATOR:
-                return new Position(cloneFloor - 1, clonePos, direction);
+                positions.add(new Position(cloneFloor - 1, clonePos, direction, nbAdditionalElevators + 1));
+                return positions;
             case BLOCK:
-                return new Position(cloneFloor, clonePos, direction.inverse());
+                positions.add(new Position(cloneFloor, clonePos, direction.inverse(), nbAdditionalElevators));
+                return positions;
             case WAIT:
+                if (b.isElevatorAt(cloneFloor - 1, clonePos)) {
+                    positions.add(new Position(cloneFloor - 1, clonePos, direction, nbAdditionalElevators));
+                }
                 switch (direction) {
                     case LEFT:
-                        return new Position(cloneFloor, clonePos + 1, direction);
+                        positions.add(new Position(cloneFloor, clonePos + 1, direction, nbAdditionalElevators));
+                        return positions;
                     case RIGHT:
-                        return new Position(cloneFloor, clonePos - 1, direction);
+                        positions.add(new Position(cloneFloor, clonePos - 1, direction, nbAdditionalElevators));
+                        return positions;
                 }
             default:
                 throw new IllegalStateException();
@@ -237,6 +287,7 @@ class Position {
 
         if (cloneFloor != position.cloneFloor) return false;
         if (clonePos != position.clonePos) return false;
+        if (nbAdditionalElevators != position.nbAdditionalElevators) return false;
         return direction == position.direction;
     }
 
@@ -244,7 +295,8 @@ class Position {
     public int hashCode() {
         int result = cloneFloor;
         result = 31 * result + clonePos;
-        result = 31 * result + direction.hashCode();
+        result = 31 * result + (direction != null ? direction.hashCode() : 0);
+        result = 31 * result + nbAdditionalElevators;
         return result;
     }
 
@@ -254,6 +306,7 @@ class Position {
                 "cloneFloor=" + cloneFloor +
                 ", clonePos=" + clonePos +
                 ", direction=" + direction +
+                ", nbAdditionalElevators=" + nbAdditionalElevators +
                 '}';
     }
 }
@@ -264,5 +317,9 @@ class Floor {
 
     public void add(int elevatorPos) {
         positions.add(elevatorPos);
+    }
+
+    boolean contains(int pos) {
+        return positions.contains(pos);
     }
 }
